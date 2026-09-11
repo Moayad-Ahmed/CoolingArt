@@ -1,0 +1,39 @@
+.tree-node {
+    position: relative;
+    transition: all 0.3s ease;
+}
+.tree-node::before {
+    content: '';
+    position: absolute;
+    top: -16px;
+    left: 50%;
+    width: 2px;
+    height: 16px;
+    background-color: #38bdf8;
+}
+.tree-root::before {
+    display: none;
+}
+.custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background-color: #38bdf8;
+    border-radius: 4px;
+}
+.nav-link {
+    transition: all 0.2s ease-in-out;
+    padding-bottom: 2px;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+}
+.nav-link-active {
+    color: #0284c7 !important;
+    border-bottom-color: #0284c7 !important;
+    font-weight: 800 !important;
+}
+.dark .nav-link-active {
+    color: #38bdf8 !important;
+    border-bottom-color: #38bdf8 !important;
+}
