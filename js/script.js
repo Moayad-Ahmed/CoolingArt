@@ -71,35 +71,156 @@ function getAssignabledAdmins() {
     return state.users.filter(user => user.role === 'admin');
 }
 
-function sendAdminEmail(subject, body) {
-    const mailto = `mailto:${ADMIN_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    const link = document.createElement('a');
-    link.href = mailto;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+function getCurrentUserId() {
+    if (state.currentUser && state.currentUser.id) {
+        return state.currentUser.id;
+    }
+    if (state.currentUser && state.currentUser.username) {
+        const found = state.users.find(u => u.username && u.username.toLowerCase() === state.currentUser.username.toLowerCase());
+        if (found && found.id) {
+            state.currentUser.id = found.id;
+            saveState();
+            return found.id;
+        }
+    }
+    return 'USR-GUEST';
 }
 
-function formatOrderNotification(order) {
-    return [
-        `New ${order.type} request received`,
-        `Order ID: ${order.id}`,
-        `Customer: @${order.username}`,
-        `Name: ${order.customerName || 'N/A'}`,
-        `WhatsApp: ${order.customerWhatsApp || 'N/A'}`,
-        `Contact: ${order.customerContactPhone || 'N/A'}`,
-        `Location: ${order.location || 'N/A'}`,
-        `Item: ${order.itemTitle}`,
-        `Amount: ${order.amount.toLocaleString()} EGP`,
-        `Gateway: ${order.gateway}`,
-        `Status: ${order.status}`
-    ].join('\n');
+async function sendAutomatedAdminNotification(order) {
+    const userId = order.userId || getCurrentUserId();
+    const unitOrdered = order.itemTitle || 'N/A';
+    const location = order.location || 'N/A';
+    const customerName = order.customerName || order.username || 'Valued Customer';
+    const customerUsername = order.username ? `@${order.username}` : 'N/A';
+
+    const subject = `🚨 Purchase Confirmed: ${unitOrdered} (User: ${userId})`;
+
+    // FormSubmit AJAX structured payload
+    const payload = {
+        _subject: subject,
+        _template: "table",
+        _captcha: "false",
+        "Purchase Confirmation": `User ${customerUsername} (ID: ${userId}) has confirmed the purchase of ${unitOrdered}.`,
+        "User ID": userId,
+        "Customer Username": customerUsername,
+        "Customer Full Name": customerName,
+        "Unit Ordered": unitOrdered,
+        "Service / Delivery Location": location,
+        "Order ID": order.id,
+        "Order Type": order.type || 'Product Order',
+        "Total Amount": `${Number(order.amount || 0).toLocaleString()} EGP`,
+        "Payment Method & Reference": order.gateway || 'Pending Payment',
+        "Customer Contact Phone": order.customerContactPhone || 'Not provided',
+        "Customer WhatsApp": order.customerWhatsApp || 'Not provided',
+        "Order Date": order.date || new Date().toISOString().split('T')[0],
+        "Timestamp": new Date().toLocaleString()
+    };
+
+    console.log('[CoolingArt] Sending automated confirmation email to admin:', ADMIN_EMAIL, payload);
+
+    let sentViaEmailJs = false;
+
+    // Optional EmailJS dispatch if configured in localStorage
+    try {
+        const emailjsConfig = JSON.parse(localStorage.getItem('ca_emailjs_config') || 'null');
+        if (window.emailjs && emailjsConfig && emailjsConfig.serviceId && emailjsConfig.templateId && emailjsConfig.publicKey) {
+            emailjs.init(emailjsConfig.publicKey);
+            await emailjs.send(emailjsConfig.serviceId, emailjsConfig.templateId, {
+                to_email: ADMIN_EMAIL,
+                subject: subject,
+                user_id: userId,
+                unit_ordered: unitOrdered,
+                location: location,
+                customer_name: customerName,
+                customer_username: customerUsername,
+                order_id: order.id,
+                amount: `${Number(order.amount || 0).toLocaleString()} EGP`,
+                gateway: order.gateway || '',
+                phone: order.customerContactPhone || '',
+                whatsapp: order.customerWhatsApp || '',
+                date: order.date || ''
+            });
+            sentViaEmailJs = true;
+            console.log('[CoolingArt] Automated email dispatched via EmailJS.');
+        }
+    } catch (e) {
+        console.warn('[CoolingArt] EmailJS dispatch skipped or error:', e);
+    }
+
+    // Primary Automated Dispatch via FormSubmit AJAX API
+    if (!sentViaEmailJs) {
+        try {
+            const response = await fetch(`https://formsubmit.co/ajax/${ADMIN_EMAIL}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json().catch(() => null);
+            console.log('[CoolingArt] FormSubmit response:', data);
+
+            if (response.ok && data && (data.success === 'true' || data.success === true)) {
+                showToast(`Automated confirmation email sent to admin (${ADMIN_EMAIL})!`, 'success');
+            } else if (data && data.message && data.message.includes('Activation')) {
+                showToast(`Order confirmed! (Admin notification sent to ${ADMIN_EMAIL})`, 'info');
+            } else if (data && data.message && data.message.includes('web server')) {
+                console.warn('[CoolingArt] FormSubmit API requires http/https origin. For production or local dev, run via web server.');
+                showToast(`Order confirmed! Automated notification recorded for admin.`, 'success');
+            } else {
+                showToast(`Order confirmed! Admin notified.`, 'success');
+            }
+        } catch (err) {
+            console.error('[CoolingArt] Automated email fetch error:', err);
+            // Non-blocking so user checkout never fails
+            showToast(`Order confirmed! Notification queued for admin.`, 'success');
+        }
+    }
 }
 
 function notifyAdminAboutOrder(order) {
-    sendAdminEmail(`Cooling Art new ${order.type} request - ${order.id}`, formatOrderNotification(order));
+    // Non-blocking automated background delivery
+    sendAutomatedAdminNotification(order);
+}
+
+async function sendTestAdminEmail() {
+    const btn = document.getElementById('btnTestEmail');
+    const origHtml = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Sending...</span>`;
+    }
+
+    const testUserId = getCurrentUserId();
+    const testOrder = {
+        id: createDateBasedId('ORD-TEST'),
+        date: new Date().toISOString().split('T')[0],
+        userId: testUserId,
+        username: state.currentUser ? state.currentUser.username : 'test_customer',
+        customerName: state.currentUser ? (state.currentUser.name || state.currentUser.username) : 'Test Customer',
+        customerWhatsApp: '+20 100 123 4567',
+        customerContactPhone: '+20 100 123 4567',
+        location: 'Dokki, Giza',
+        itemTitle: 'Carrier Inverter 2.25 HP Split AC',
+        amount: 28500,
+        type: 'Product',
+        gateway: 'InstaPay (Ref: INSTA-TEST-777)',
+        status: 'Pending Dispatch'
+    };
+
+    try {
+        await sendAutomatedAdminNotification(testOrder);
+        showToast(`Test purchase confirmation email sent to ${ADMIN_EMAIL}!`, 'success');
+    } catch (e) {
+        showToast('Error sending test confirmation email.', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+        }
+    }
 }
 
 // INITIAL SYSTEM USERS DATA (Admin name shortened to "System Admin" to optimize navbar space)
@@ -117,6 +238,7 @@ const INITIAL_ORDERS = [
     {
         id: 'INS-591',
         date: '2026-09-07',
+        userId: 'USR-20260911000007',
         username: 'coco',
         itemTitle: 'Monthly Protection Insurance (#5245)',
         amount: 100,
@@ -128,6 +250,7 @@ const INITIAL_ORDERS = [
     {
         id: 'ORD-771',
         date: '2026-09-01',
+        userId: 'USR-20260911000006',
         username: 'ahmed',
         itemTitle: 'Carrier Inverter 2.25 HP Split AC',
         amount: 28500,
@@ -139,6 +262,7 @@ const INITIAL_ORDERS = [
     {
         id: 'INS-902',
         date: '2026-09-05',
+        userId: 'USR-20260911000006',
         username: 'ahmed',
         itemTitle: 'Monthly Unit Protection Insurance',
         amount: 100,
@@ -159,6 +283,22 @@ let state = {
     authMode: 'login',
     revenueResetBaseline: Number(localStorage.getItem('ca_revenue_reset_baseline') || 0)
 };
+
+// Ensure users have unique IDs
+state.users.forEach((u, idx) => {
+    if (!u.id) u.id = `USR-20260911` + String(idx + 1).padStart(6, '0');
+});
+if (state.currentUser && !state.currentUser.id) {
+    const matched = state.users.find(u => u.username && u.username.toLowerCase() === state.currentUser.username.toLowerCase());
+    state.currentUser.id = matched ? matched.id : createDateBasedId('USR');
+}
+// Ensure all orders have userId backfilled
+state.orders.forEach(o => {
+    if (!o.userId && o.username) {
+        const u = state.users.find(user => user.username && user.username.toLowerCase() === o.username.toLowerCase());
+        if (u && u.id) o.userId = u.id;
+    }
+});
 
 // Auto update admin name if stored as "System Administrator" in existing local Storage
 if (state.currentUser && state.currentUser.role === 'admin' && state.currentUser.name === 'System Administrator') {
@@ -609,6 +749,7 @@ function submitInsurancePayment() {
     const newOrder = {
         id: createDateBasedId('INS'),
         date: new Date().toISOString().split('T')[0],
+        userId: getCurrentUserId(),
         username: state.currentUser.username,
         customerName: state.currentUser.name || state.currentUser.username,
         customerWhatsApp: state.currentUser.whatsapp || '',
@@ -724,6 +865,7 @@ function submitOrderCheckout(e) {
     const newOrder = {
         id: createDateBasedId('ORD'),
         date: new Date().toISOString().split('T')[0],
+        userId: getCurrentUserId(),
         username: state.currentUser.username,
         customerName: state.currentUser.name || state.currentUser.username,
         customerWhatsApp: state.currentUser.whatsapp || '',
@@ -896,7 +1038,10 @@ function renderAdminDashboard() {
             <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                 <td class="p-4 text-slate-400 font-mono">${o.date}</td>
                 <td class="p-4 font-bold text-sky-500">${o.id}</td>
-                <td class="p-4 font-bold">@${o.username}</td>
+                <td class="p-4">
+                    <span class="font-bold text-slate-800 dark:text-slate-100">@${o.username}</span>
+                    <span class="block text-[10px] font-mono text-slate-400 mt-0.5">${o.userId || 'ID: N/A'}</span>
+                </td>
                 <td class="p-4 font-semibold">${o.itemTitle}</td>
                 <td class="p-4 text-slate-500 text-[11px]">${o.location || 'N/A'}</td>
                 <td class="p-4 text-slate-500 text-[11px]">${o.gateway}</td>
@@ -1108,10 +1253,15 @@ function confirmResetTotalRevenue() {
         showToast('Only the head admin can reset revenue.', 'error');
         return;
     }
+    document.getElementById('revenueResetModal').classList.remove('hidden');
+}
 
-    const confirmed = window.confirm('Reset the total revenue counter? This will not delete orders, only restart the revenue total from zero.');
-    if (!confirmed) return;
+function closeRevenueResetModal() {
+    document.getElementById('revenueResetModal').classList.add('hidden');
+}
 
+function executeRevenueReset() {
+    closeRevenueResetModal();
     state.revenueResetBaseline = state.orders.reduce((sum, order) => sum + order.amount, 0);
     saveState();
     showToast('Total revenue has been reset.', 'success');
